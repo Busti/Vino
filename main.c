@@ -19,7 +19,7 @@
  * T0L		750	900	1050		ns	0 code,		low  level time
  * T1H		450	600	750		ns	1 code,		high level time
  * T1L		450	600	750		ns	1 code,		low  level time
- * RES		38	80	infinity	us	Reset code,	low  level time
+ * RES		38	80	infinity	µs	Reset code,	low  level time
  */
 
 const uint16_t ir_codes[] = {
