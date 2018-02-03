@@ -7,7 +7,7 @@
 #define PIXELS 90
 
 //                543210
-#define HIBIT 0b00001000
+#define HIBIT 0b00010000
 #define LOBIT 0b00000000
 
 #define DIST 3
@@ -21,6 +21,13 @@
  * T1L		450	600	750		ns	1 code,		low  level time
  * RES		38	80	infinity	us	Reset code,	low  level time
  */
+
+typedef struct RGBW {
+	uint8_t r;
+	uint8_t g;
+	uint8_t b;
+	uint8_t w;
+} RGBW;
 
 const uint16_t ir_codes[] = {
 //	brighter	darker		play / pause	on / off
@@ -47,6 +54,19 @@ const uint16_t ir_codes[] = {
 	0x20DF,		0xA05F,		0x609F,		0xE01F
 };
 
+const uint32_t led_colors[] = {
+//	red		green		blue		white
+	0x000000FF,	0x0000FF00,	0x00FF0000,	0xFF000000,
+//	orange		lime		mediumblue	rosa
+	0x000088FF,	0x0000FF22,	0x00FF4444,	0xFF22AAFF,
+//	orangered	lightblue	violet		rosa
+	0x000044FF,	0x0088FF22,	0x00FF0044,	0xFF0044FF,
+//	lightorange	cyan		wine		babyblue
+	0x002288FF,	0x00FFFF00,	0x004400FF,	0xFFBB2288,
+//	yellow		turquoise	pink		babyblue
+	0x0000CCFF,	0x00FFBB00,	0x00FF00FF,	0xFFFF0000
+};
+
 const uint8_t	ir_bnum		= 44;
 
 bool 		ir_data		= false;
@@ -55,7 +75,47 @@ uint32_t 	ir_reading	= 0;
 uint32_t	ir_code		= 0;
 uint8_t		ir_repeating	= 0;
 
-uint8_t		led_brightness	= 255;
+bool		led_running	= true;
+uint8_t		led_brightness	= 20;
+uint8_t		led_speed	= 128; //todo: implement
+
+uint8_t		led_mode	= 0;
+RGBW		led_color	= {0, 0, 0, 0};
+
+uint8_t		led_mode_prev	= 0;
+RGBW		led_color_prev	= {0, 0, 0, 0};
+
+uint8_t		led_anim	= 255;
+
+uint8_t sat_add(uint8_t x, uint8_t y) {
+	uint8_t res = x + y;
+	res |= -(res < x);
+    
+	return res;
+}
+
+uint8_t sat_sub(uint8_t x, uint8_t y) {
+	uint8_t res = x - y;
+	res &= -(res <= x);
+	
+	return res;
+}
+
+uint8_t lerp_byte(uint8_t a, uint8_t b, uint8_t x) {
+	return (a * (255 - x) + b * x) >> 8;
+}
+
+RGBW lerp_color(const RGBW* a, const RGBW* b, uint8_t x) {
+	uint8_t y = 255 - x;
+	RGBW result = {
+		(a->r * y + b->r * x) >> 8,
+		(a->g * y + b->g * x) >> 8,
+		(a->b * y + b->b * x) >> 8,
+		(a->w * y + b->r * x) >> 8
+	};
+
+	return result;
+}
 
 void writeByte(uint8_t byte, uint8_t brightness) {
 	cli();
@@ -85,7 +145,17 @@ void writeByte(uint8_t byte, uint8_t brightness) {
 	sei();
 }
 
+//void writeValue(uint8_t value, uint8_t brightness) {
+//	writeByte(led_gamma[value], brightness);
+//}
+
 void writeRGBW(uint8_t r, uint8_t g, int8_t b, uint8_t w, uint8_t brightness) {
+	//r = &led_gamma[r];
+	//g = &led_gamma[g];
+	//b = &led_gamma[b];
+	//w = &led_gamma[w];
+
+	//Write Order for SK6812 is GRBW
 	writeByte(g, brightness);
 	writeByte(r, brightness);
 	writeByte(b, brightness);
@@ -96,27 +166,70 @@ void writeRGB(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness) {
 	writeRGBW(r, g, b, 0, brightness);
 }
 
-void writeHue(uint8_t hue, uint8_t brightness) {
-	if(hue < 85) {
-		writeRGBW(255 - hue * 3, 0, hue * 3, 0, brightness);
-	} else if(hue < 170) {
-		hue -= 85;
-		writeRGBW(0, hue * 3, 255 - hue * 3, 0, brightness);
-	} else {
-		hue -= 170;
-		writeRGBW(hue * 3, 255 - hue * 3, 0, 0, brightness);
-	}
+void writeColor(const RGBW* color, uint8_t brightness) {
+	writeRGBW(
+			color->r, 
+			color->g,
+			color->b,
+			color->w,
+			brightness
+	);
+}
+
+//void writeHue(uint8_t hue, uint8_t brightness) {
+//	if(hue < 85) {
+//		writeRGBW(255 - hue * 3, 0, hue * 3, 0, brightness);
+//	} else if(hue < 170) {
+//		hue -= 85;
+//		writeRGBW(0, hue * 3, 255 - hue * 3, 0, brightness);
+//	} else {
+//		hue -= 170;
+//		writeRGBW(hue * 3, 255 - hue * 3, 0, 0, brightness);
+//	}
+//}
+
+void setMode(uint8_t mode, uint32_t color) {
+	led_color_prev.r = led_color.r;
+	led_color_prev.g = led_color.g;
+	led_color_prev.b = led_color.b;
+	led_color_prev.w = led_color.w;
+	led_color.r = color;
+	led_color.g = color >> 8;
+	led_color.b = color >> 16;
+	led_color.w = color >> 24;
+	led_mode_prev	= led_mode;
+	led_mode	= mode;
+	led_anim	= 255;
 }
 
 void execute(uint8_t code) {
-	switch(code) {
+	if (code > 4 && code < 25)
+		setMode(0, led_colors[code - 5]);
+
+	switch (code) {
 		case 1:
-			if (led_brightness < 255)
-				led_brightness += ir_repeating;
+			led_brightness = sat_add(led_brightness, ir_repeating);
 			break;
 		case 2:
-			if (led_brightness > 0)
-				led_brightness -= ir_repeating;
+			led_brightness = sat_sub(led_brightness, ir_repeating);
+			break;
+		case 3:
+			if (led_running) {
+				led_running = false;
+			} else {
+				led_running = true;
+			}
+			break;
+		case 4:
+			setMode(0, 0);
+			break;
+		case 28:
+			led_speed = sat_add(led_speed, ir_repeating);
+			break;
+		case 32:
+			led_speed = sat_sub(led_speed, ir_repeating);
+		case 44:
+			setMode(1, 0);
 			break;
 	}
 }
@@ -141,34 +254,66 @@ void onRepeat(uint16_t value) {
 		ir_repeating++;
 	
 	uint8_t code = decode(value);
+
+	if (code > 2 && code < 25) //Do not repeat these values.
+		return;
+
 	execute(code);
 }
 
+RGBW render(uint8_t pos, uint8_t mode, RGBW color) {
+	switch (mode) {
+		case 0:
+			return color;
+			break;
+		case 1:
+			return color;
+			break;
+	}
+	return color;
+}
+
 int main(void) {
-	DDRB   = 0x08;		//Set PB3 as output.
+	DDRB   = 0x10;		//Set PB3 as output.
 	PORTB  = LOBIT;		//Activate pull resistors.
 
 	GIMSK  = 0x20;		//Enable pin change interrupt.
-	PCMSK  = 0x10;		//Enable interrupt on pins.
+	PCMSK  = 0x08;		//Enable interrupt on pins.
 
 	TCCR0A = 0;		// Disable timer compare.
 	TCCR0B = 5 << CS00;	// Setup   timer prescaler.
 
 	sei();
 
-	while(1) {
-		for (uint8_t i = 0; i < 8; i++) {
-			writeRGB(255, 0, 0, led_brightness);
-		}
+	setMode(0, led_colors[0]);
 
-		_delay_ms(50);
+	while(1) {
+		RGBW color = render(0, led_mode, led_color);
+		//if (led_anim > 0) {
+		//	RGBW prev = render(0, led_mode_prev, led_color_prev);
+		//	color = lerp_color(&color, &prev, led_anim);
+		//}
+		//for (uint8_t i = 0; i < 8; i++)
+		//	writeRGB(0, 0, (led_anim >> i) & 1 ? 255 : 0, 100);
+		for (uint8_t i = 0; i < PIXELS; i++) {
+			//RGBW color = render(i, led_mode, led_color);
+			//if (led_anim > 0) {
+			//	RGBW prev = render(i, led_mode_prev, led_color_prev);
+			//	color = lerp_color(&color, &prev, led_anim);
+			//}
+			writeColor(&color, led_brightness);
+		}
+		_delay_ms(40);
+		//Do non relevant stuff after the lights have been rendered...
+		if (led_anim > 0)
+			led_anim = sat_sub(led_anim, 5);
 	}
 }
 
 ISR(PCINT0_vect) {
 	uint8_t time = TCNT0;		//Read time of last edge
 	TCNT0 = 0;			//Reset timer
-	bool state = PINB & 0x10;	//Get current interrupt pin state;
+	bool state = PINB & 0x08;	//Get current interrupt pin state;
 
 	if (state && time > 128) {
 		ir_pos = 0;
